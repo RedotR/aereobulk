@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bulk Certificate Generator</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #222; background: #fff; }
+  main { max-width: 820px; margin: 0 auto; padding: 32px 16px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: #777; margin: 0 0 24px; }
+  section { margin-bottom: 28px; }
+  label { display: block; font-size: 13px; color: #555; margin: 14px 0 4px; }
+  input[type=text], input[type=date], textarea { width: 100%; padding: 7px 9px; border: 1px solid #ccc;
+           border-radius: 3px; font: inherit; background: #fff; }
+  textarea { height: 170px; font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 200px; }
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  button { padding: 7px 14px; border: 1px solid #bbb; border-radius: 3px; background: #f5f5f5; font: inherit; cursor: pointer; }
+  button.primary { background: #222; border-color: #222; color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .muted { color: #777; font-size: 13px; }
+  .error { border: 1px solid #d99; background: #fdf3f3; color: #922; padding: 8px 12px; margin-top: 12px; white-space: pre-line; }
+  .bar { height: 6px; background: #eee; margin: 10px 0; }
+  .bar > div { height: 100%; width: 0; background: #222; transition: width .3s; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
+  th { font-weight: 600; color: #555; }
+  .badge.success { color: #1a7f37; } .badge.failed { color: #c62828; } .badge.pending { color: #888; }
+  .hidden { display: none; }
+  ul { padding-left: 18px; margin: 6px 0 0; }
+  footer { border-top: 1px solid #e5e5e5; padding-top: 12px; color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Bulk Certificate Generator</h1>
+  <p class="sub">Upload a list of names, get a PDF certificate for each one.</p>
+
+  <section>
+    <div class="row">
+      <div><label for="event">Event / course name</label><input type="text" id="event" value="Aereo Python Developer"></div>
+      <div><label for="date">Issue date</label><input id="date" type="date"></div>
+    </div>
+    <label for="issuer">Issuer name (optional)</label>
+    <input type="text" id="issuer" value="Rajesh">
+
+    <label for="recipients">Recipients — one per line: <code>Name, email</code></label>
+    <textarea id="recipients"></textarea>
+    <div class="actions">
+      <input id="csv" type="file" accept=".csv,.txt" style="width:auto">
+      <button id="sample" type="button">Load sample data</button>
+      <span id="count" class="muted">0 recipients</span>
+    </div>
+
+    <div class="actions">
+      <button id="generate" class="primary" type="button">Generate certificates</button>
+    </div>
+    <div id="error" class="error hidden"></div>
+  </section>
+
+  <section id="progress" class="hidden">
+    <div id="status"></div>
+    <div class="bar"><div id="fill"></div></div>
+    <div class="counts" id="counts"></div>
+    <div class="actions"><button id="zip" type="button" disabled>Download all (ZIP)</button></div>
+    <table>
+      <thead><tr><th>#</th><th>Name</th><th>Email</th><th>Status</th><th>Email</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <strong>Recent jobs</strong>
+    <ul id="history"><li class="muted">None yet</li></ul>
+  </section>
+  <footer>&copy; 2026 Rajesh &middot; Built for the Aereo project</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pollTimer = null;
+
+$("date").value = new Date().toISOString().slice(0, 10);
+
+// Turn "Name, email" lines into [{name, email}]. Splits on the LAST comma so
+// names containing commas still work. Blank lines are ignored.
+function parseRecipients(text) {
+  return text.split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
+    const i = line.lastIndexOf(",");
+    if (i === -1) return { name: line, email: "" };
+    return { name: line.slice(0, i).trim().replace(/^"|"$/g, ""), email: line.slice(i + 1).trim() };
+  });
+}
+
+function updateCount() {
+  const n = parseRecipients($("recipients").value).length;
+  $("count").textContent = n + (n === 1 ? " recipient" : " recipients");
+}
+$("recipients").addEventListener("input", updateCount);
+
+$("csv").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  let text = await file.text();
+  // Drop a header row like "name,email" if present.
+  text = text.replace(/^\s*name\s*,\s*email\s*\r?\n/i, "");
+  $("recipients").value = text.trim();
+  updateCount();
+});
+
+const SAMPLE = [
+  "Aarav Sharma, aarav.sharma@example.com",
+  "Priya Nair, priya.nair@example.com",
+  "Vikram Reddy, vikram.reddy@example.com",
+  "Ananya Iyer, ananya.iyer@example.com",
+  "Karthik Subramanian, karthik.s@example.com",
+  "Sneha Patil, sneha.patil@example.com",
+  "Rohan Mehta, rohan.mehta",          // invalid email, on purpose
+  ", meera.joshi@example.com",         // missing name, on purpose
+  "Aarav Sharma, aarav.sharma@example.com", // duplicate, on purpose
+].map((l) => l.replace(/\s*\/\/.*$/, "")).join("\n");
+
+function loadSample() {
+  $("event").value = "Aereo Python Developer";
+  $("issuer").value = "Rajesh";
+  $("recipients").value = SAMPLE;
+  updateCount();
+}
+$("sample").addEventListener("click", loadSample);
+loadSample(); // start with the sample so the page is ready to demo
+
+function showError(msg) {
+  $("error").textContent = msg;
+  $("error").classList.toggle("hidden", !msg);
+}
+
+// FastAPI 422 errors come as {detail: [{loc, msg}, ...]}; make them readable.
+function formatApiError(data) {
+  if (data && Array.isArray(data.detail)) {
+    return data.detail.map((d) => d.loc.slice(1).join(".") + ": " + d.msg).join("\n");
+  }
+  return (data && data.detail) || "Request failed";
+}
+
+$("generate").addEventListener("click", async () => {
+  showError("");
+  clearInterval(pollTimer);
+  $("generate").disabled = true;
+  try {
+    const res = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event_name: $("event").value,
+        issue_date: $("date").value || null,
+        issuer_name: $("issuer").value || null,
+        send_email: true, // server skips sending if no email key is configured
+        recipients: parseRecipients($("recipients").value),
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) { showError(formatApiError(data)); return; }
+    $("progress").classList.remove("hidden");
+    poll(data.job_id);
+    pollTimer = setInterval(() => poll(data.job_id), 1000);
+  } catch (err) {
+    showError("Network error: could not reach the server.");
+  } finally {
+    $("generate").disabled = false;
+  }
+});
+
+async function poll(jobId) {
+  try {
+    const res = await fetch("/api/jobs/" + jobId);
+    if (!res.ok) throw new Error("status " + res.status);
+    const job = await res.json();
+    render(job);
+    if (!["pending", "processing"].includes(job.status)) {
+      clearInterval(pollTimer);
+      loadHistory();
+    }
+  } catch (err) {
+    // Keep polling; a temporary network blip shouldn't kill the page.
+    showError("Network error while checking progress; retrying...");
+    return;
+  }
+  showError("");
+}
+
+function cell(tr, text) {
+  const td = document.createElement("td");
+  td.textContent = text; // textContent, never innerHTML, for user data
+  tr.appendChild(td);
+  return td;
+}
+
+function render(job) {
+  const finished = !["pending", "processing"].includes(job.status);
+  $("status").textContent = "Status: " + job.status.replaceAll("_", " ");
+  $("fill").style.width = job.percentage + "%";
+  $("counts").textContent =
+    `Success: ${job.success_count}   Failed: ${job.failed_count}   Total: ${job.total_count}   (${job.percentage}%)`;
+
+  const zip = $("zip");
+  zip.disabled = !(finished && job.success_count > 0);
+  zip.onclick = () => { window.location = `/api/jobs/${job.id}/download`; };
+
+  const tbody = $("rows");
+  tbody.replaceChildren();
+  job.certificates.forEach((c, i) => {
+    const tr = document.createElement("tr");
+    cell(tr, i + 1);
+    cell(tr, c.recipient_name);
+    cell(tr, c.recipient_email);
+
+    const statusTd = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = "badge " + c.status;
+    badge.textContent = c.status;
+    statusTd.appendChild(badge);
+    if (c.error_message) {
+      const err = document.createElement("div");
+      err.className = "muted";
+      err.textContent = c.error_message;
+      statusTd.appendChild(err);
+    }
+    tr.appendChild(statusTd);
+
+    const emailTd = cell(tr, c.email_status ? (c.email_error ? `${c.email_status}: ${c.email_error}` : c.email_status) : "-");
+    emailTd.className = "muted";
+
+    const actionTd = document.createElement("td");
+    if (c.download_url) {
+      const a = document.createElement("a");
+      a.href = c.download_url;
+      const b = document.createElement("button");
+      b.textContent = "Download";
+      a.appendChild(b);
+      actionTd.appendChild(a);
+    }
+    tr.appendChild(actionTd);
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadHistory() {
+  try {
+    const jobs = await (await fetch("/api/jobs")).json();
+    const ul = $("history");
+    ul.replaceChildren();
+    jobs.forEach((j) => {
+      const li = document.createElement("li");
+      li.textContent = `${j.event_name} — ${j.status.replaceAll("_", " ")} (${j.success_count}/${j.total_count}) `;
+      const view = document.createElement("a");
+      view.href = "#";
+      view.textContent = "view";
+      view.onclick = (e) => {
+        e.preventDefault();
+        clearInterval(pollTimer);
+        $("progress").classList.remove("hidden");
+        poll(j.id);
+      };
+      li.appendChild(view);
+      ul.appendChild(li);
+    });
+  } catch (err) { /* history is optional; ignore failures */ }
+}
+loadHistory();
+</script>
+</body>
+</html>
